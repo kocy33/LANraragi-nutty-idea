@@ -1,3 +1,9 @@
+Lanraragi Example Nut-Button Test.
++ Clear History doesnt work yet.
++ Backup not working yet
++ Deleting Timestamp / Nut works, but shows error on Toast thingi after.
+
+
 [<img src="https://img.shields.io/docker/pulls/difegue/lanraragi.svg">](https://hub.docker.com/r/difegue/lanraragi/)
 [<img src="https://img.shields.io/github/downloads/difegue/lanraragi/total.svg">](https://github.com/Difegue/LANraragi/releases)
 [<img src="https://img.shields.io/github/release/difegue/lanraragi.svg?label=latest%20release">](https://github.com/Difegue/LANraragi/releases/latest)
