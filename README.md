@@ -1,9 +1,11 @@
 Lanraragi Example Nut-Button Test.
+This fork shows the idea i had in this [Feature Request] https://github.com/Difegue/LANraragi/issues/1355
 + Clear History doesnt work yet.
 + Backup not working yet
 + Deleting Timestamp / Nut works, but shows error on Toast thingi after.
 + Counters look aweful at wrong location
 
+  Original Lanraragi Description:
 
 [<img src="https://img.shields.io/docker/pulls/difegue/lanraragi.svg">](https://hub.docker.com/r/difegue/lanraragi/)
 [<img src="https://img.shields.io/github/downloads/difegue/lanraragi/total.svg">](https://github.com/Difegue/LANraragi/releases)
