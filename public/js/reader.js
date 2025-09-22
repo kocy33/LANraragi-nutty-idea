@@ -33,6 +33,37 @@ Reader.initializeAll = function () {
 
     // Bind events to DOM
     $(document).on("keyup", Reader.handleShortcuts);
+    //Nut Button
+    // --- Clean slate: remove any previous bindings for these controls ---
+$(document).off('click.readerViewHistory',       '[data-action="view-history"]');
+$(document).off('click.readerRecordAndView',     '[data-action="record-and-view-history"]');
+$(document).off('click.readerRecordOnly',        '[data-action="record-timestamp"]');
+
+// Also remove probable legacy handlers so they don't double-fire
+$(document).off('click', '.toggle-view-history');
+$(document).off('click', '.view-history-btn');
+$(document).off('click', '#viewHistoryButton');
+$(document).off('click', '.record-view-btn');
+$(document).off('click', '#recordViewButton');
+
+// --- Bind the three buttons (namespaced so multiple inits won't duplicate) ---
+$(document).on('click.readerViewHistory', '[data-action="view-history"]', function (e) {
+  e.preventDefault();
+  if (!LRR.isUserLogged()) return;
+  Reader.toggleViewHistory(false);  // opens popup, no record
+});
+
+$(document).on('click.readerRecordAndView', '[data-action="record-and-view-history"]', function (e) {
+  e.preventDefault();
+  if (!LRR.isUserLogged()) return;
+  Reader.toggleViewHistory(true);   // record first, then open popup
+});
+
+$(document).on('click.readerRecordOnly', '[data-action="record-timestamp"]', function (e) {
+  e.preventDefault();
+  if (!LRR.isUserLogged()) return;
+  Reader.recordView();              // record only, no popup
+});
     // Restrict keydown to only function for spacebar
     $(document).on("keydown", (e) => { if (e.keyCode === 32) Reader.handleShortcuts(e); });
     $(document).on("wheel", Reader.handleWheel);
@@ -62,6 +93,79 @@ Reader.initializeAll = function () {
     $(document).on("click.regenerate-archive-cache", "#regenerate-cache", () => {
         window.location.href = new LRR.apiURL(`/reader?id=${Reader.id}&force_reload`);
     });
+
+// --- Ensure no duplicate handlers remain ---
+$(document).off('click', '.delete-history-entry');                 // remove any legacy bindings
+$(document).off('click.readerDeleteHistory', '.delete-history-entry'); // remove our namespaced binding if reloaded
+  
+  // Nut timestamp delete What to do when its clicked
+// Delete a single history timestamp from the popup list (single-shot, silent API)
+$(document).on('click.readerDeleteHistory', '.delete-history-entry', function (e) {
+  e.preventDefault();
+  e.stopPropagation(); // keep the popup open
+
+  const $btn = $(this);
+  const $li  = $btn.closest('li');
+  if ($li.length === 0) {
+    LRR.toast({ heading: 'Error', text: 'Missing list item.', icon: 'error' });
+    return;
+  }
+
+  // Get archive id robustly
+  const id =
+    (window.Reader && Reader.id) ||
+    $btn.attr('data-archive-id') ||
+    (document.querySelector('[data-archive-id]')?.getAttribute('data-archive-id')) ||
+    new URL(window.location.href).searchParams.get('id') ||
+    (window.location.pathname.match(/(?:archives|reader)\/([^\/?#]+)/i)?.[1]);
+
+  // We kept the raw ZSET member here; send it as-is
+  const member = ($li.attr('data-member') || '').trim();
+
+  if (!id || !member) {
+    LRR.toast({ heading: 'Error', text: 'Missing archive id or timestamp.', icon: 'error' });
+    return;
+  }
+
+  // Guard against accidental double-clicks
+  if ($li.data('isDeleting')) return;
+  $li.data('isDeleting', true);
+
+  // Small UI hint
+  $btn.prop('disabled', true).addClass('is-loading');
+
+  // IMPORTANT: pass empty errorMessage to suppress Server.callAPI's built-in toast.
+  Server.callAPI(
+    `/api/archives/${encodeURIComponent(id)}/history/${encodeURIComponent(member)}`,
+    'DELETE',
+    null,
+    '', // suppress automatic error toast; we'll handle it ourselves
+    (data) => {
+      $btn.prop('disabled', false).removeClass('is-loading');
+      $li.removeData('isDeleting');
+
+      if (data && data.success) {
+        // remove the row
+        $li.remove();
+
+        Reader.bumpHistoryCounters(-1, id);
+
+        // if the list is empty, show a placeholder
+        const $list = $('.view-history-list');
+        if ($list.length && $list.children().length === 0) {
+          $list.append('<li class="empty">No history entries.</li>');
+        }
+      } else {
+        LRR.toast({
+          heading: 'Error',
+          text: (data && data.error) || 'Failed to delete history entry',
+          icon: 'error'
+        });
+      }
+    }
+  );
+});
+
     $(document).on("click.edit-metadata", "#edit-archive", () => LRR.openInNewTab(new LRR.apiURL(`/edit?id=${Reader.id}`)));
     $(document).on("click.delete-archive", "#delete-archive", () => {
         LRR.closeOverlay();
@@ -568,6 +672,201 @@ Reader.toggleHelp = function () {
     // all toggable panes need to return false to avoid scrolling to top
 };
 
+// Nut Button Toggle
+Reader.toggleViewHistory = function (recordFirst = false) {
+  const id =
+    (window.Reader && Reader.id) ||
+    new URL(window.location.href).searchParams.get("id") ||
+    (window.location.pathname.match(/(?:archives|reader)\/([^\/?#]+)/i)?.[1]);
+
+  if (!id) {
+    LRR.toast({ heading: "Error", text: "Missing archive id.", icon: "error" });
+    return;
+  }
+
+  const fetchAndShow = () => {
+    Server.callAPI(
+      `/api/archives/${encodeURIComponent(id)}/history`,
+      "GET",
+      null,
+      "Failed to retrieve view history",
+      (data) => {
+        const entries = Array.isArray(data?.history) ? data.history : [];
+
+        // >>> UPDATE LOCAL COUNTER HERE <<<
+        Reader._setLocalCountText(id, entries.length);
+
+        // Build list items — keep the raw backend member in data-member
+        const historyList = entries.map((m) => {
+          const mStr = String(m);
+          const n = Number(mStr);
+          const displayMs = /^\d{13}$/.test(mStr) ? n : n * 1000; // label only
+          const label = isNaN(displayMs) ? mStr : new Date(displayMs).toLocaleString();
+          return `
+            <li data-member="${mStr}">
+              <span class="timestamp-label">${label}</span>
+              <button type="button"
+                      class="delete-history-entry"
+                      data-archive-id="${id}"
+                      aria-label="Delete entry">✖</button>
+            </li>`;
+        }).join("");
+
+        const listHtml = historyList || '<li class="empty">No history entries.</li>';
+
+        LRR.showPopUp({
+          title: "View History",
+          html: `
+            <div class="view-history-container" data-archive-id="${id}">
+              <h3>View History</h3>
+              <ul class="view-history-list">${listHtml}</ul>
+              <button class="btn btn-danger" onclick="Reader.clearViewHistory()">Clear History</button>
+            </div>`,
+          showConfirmButton: false,
+          showCloseButton: true
+        });
+      }
+    );
+  };
+
+  if (recordFirst) {
+    // Record silently, then open the popup
+    Server.callAPI(
+      `/api/archives/${encodeURIComponent(id)}/view`,
+      "PUT",
+      null,
+      "", // suppress auto error toast
+      () => fetchAndShow()
+    );
+  } else {
+    fetchAndShow();
+  }
+};
+
+Reader.recordView = function (idOpt) {
+  const id =
+    idOpt ||
+    (window.Reader && Reader.id) ||
+    new URL(window.location.href).searchParams.get("id") ||
+    (window.location.pathname.match(/(?:archives|reader)\/([^\/?#]+)/i)?.[1]);
+
+  if (!id) {
+    LRR.toast({ heading: "Error", text: "Missing archive id.", icon: "error" });
+    return;
+  }
+
+  Server.callAPI(
+    `/api/archives/${encodeURIComponent(id)}/view`,
+    "PUT",
+    null,
+    "", // suppress auto error toast; we'll show our own on failure
+    (data) => {
+      if (data && data.success) {
+        // COUNTERS ++ (local + global)
+        Reader.bumpHistoryCounters(1, id);
+        // Optional: brief confirmation
+        LRR.toast({ heading: "Saved", text: "Nut recorded.", icon: "success", hideAfter: 1500 });
+
+        // Optional: update a view counter if present
+        const $count = $('.view-count[data-archive-id="'+id+'"], .view-count');
+        if ($count.length) {
+          const n = parseInt($count.text(), 10);
+          if (!isNaN(n)) $count.text(n + 1);
+        }
+      } else {
+        LRR.toast({
+          heading: "Error",
+          text: (data && data.error) || "Failed to record timestamp",
+          icon: "error"
+        });
+      }
+    }
+  );
+};
+
+// Delete single NUT timestamp
+Reader.deleteSingleHistoryEntry = function (timestamp) {
+  fetch(`/api/archives/${Reader.id}/history/${timestamp}`, {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" }
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (!data.success) throw new Error(data.error || "Unknown error");
+    LRR.toast({ heading: "Entry Removed", text: "The selected timestamp has been removed.", icon: "success" });
+    $(`.view-history-list li[data-timestamp="${timestamp}"]`).remove();
+  })
+  .catch(err => {
+    console.error("Failed to delete history entry:", err);
+    LRR.toast({ heading: "Error", text: "Failed to delete history entry", icon: "error" });
+  });
+};
+
+/**
+ * Clears the view history for the current archive.
+ */
+Reader.clearViewHistory = function () {
+  const id =
+    (window.Reader && Reader.id) ||
+    new URL(window.location.href).searchParams.get("id") ||
+    (window.location.pathname.match(/(?:archives|reader)\/([^\/?#]+)/i)?.[1]);
+
+  if (!id) {
+    LRR.toast({ heading: "Error", text: "Missing archive id.", icon: "error" });
+    return;
+  }
+
+  // Determine how many we are about to remove:
+  // prefer the visible local counter; fallback to DOM list if popup is open.
+  let toRemove = 0;
+  const localCounterEl = document.querySelector('.history-counter.local[data-archive-id="'+id+'"], .history-counter.local');
+  if (localCounterEl) {
+    const n = parseInt(localCounterEl.textContent, 10);
+    toRemove = isNaN(n) ? 0 : n;
+  } else {
+    // fallback if counter not rendered yet
+    toRemove = document.querySelectorAll(".view-history-list li:not(.empty)").length;
+  }
+
+  Server.callAPI(
+    `/api/archives/${encodeURIComponent(id)}/history`,
+    "DELETE",
+    null,
+    "Failed to clear view history",
+    (data) => {
+      if (data && data.success) {
+        LRR.toast({
+          heading: "History Cleared",
+          text: "The view history has been successfully cleared.",
+          icon: "success"
+        });
+
+        // COUNTERS -= toRemove (local + global) and set local to 0
+        if (toRemove > 0) {
+          Reader.bumpHistoryCounters(-toRemove, id);
+        }
+        Reader._setLocalCountText(id, 0);
+
+        // Clean the popup UI if it's open
+        const container = document.querySelector(".view-history-container");
+        if (container) {
+          const ul = container.querySelector(".view-history-list");
+          if (ul) {
+            ul.innerHTML = '<li class="empty">No history entries.</li>';
+          }
+        }
+      } else {
+        LRR.toast({
+          heading: "Error",
+          text: (data && data.error) || "Failed to clear view history",
+          icon: "error"
+        });
+      }
+    }
+  );
+};
+
 Reader.toggleBookmark = function(e) {
     e.preventDefault();
     if ( !localStorage.getItem("bookmarkCategoryId") ) {
@@ -614,6 +913,65 @@ Reader.loadBookmarkStatus = function() {
                     const bookmarkState = isBookmarked ? "fas" : "far";
                     const disabledClass = LRR.isUserLogged() ? "" : " disabled";
                     const leftOptionsList = document.querySelectorAll(".absolute-options.absolute-left");
+                    
+                    // === Add this code block here to create the View History button ===
+                    // === Add three history controls (View, Record+View, Add) ===
+                    leftOptionsList.forEach(leftOption => {
+                    // Remove any previous controls to avoid duplicates on re-init
+                    leftOption.querySelectorAll(".reader-history-controls").forEach(n => n.remove());
+
+                    const controls = document.createElement("span");
+                    controls.className = "reader-history-controls";
+
+                    function makeIconButton(title, faClasses, action) {
+                        const a = document.createElement("a");
+                        a.href = "#";
+                        a.title = title;
+                        a.className = `${faClasses} fa-2x`;
+                        a.setAttribute("data-action", action);
+                        if (!LRR.isUserLogged()) {
+                            a.style.opacity = "0.5";
+                            a.style.cursor = "not-allowed";
+                            a.setAttribute("aria-disabled", "true");
+                        }
+                        return a;
+                    }
+
+                    // Font Awesome icon picks (adjust to your taste)
+                    const btnView        = makeIconButton("View history",        "fa fa-history",     "view-history");
+                    const btnRecordView  = makeIconButton("Record + view",       "fa fa-plus-circle", "record-and-view-history");
+                    const btnRecordOnly  = makeIconButton("Add timestamp",       "fa fa-clock",       "record-timestamp");
+                    // Counters (plain numbers)
+                    const localCnt  = document.createElement("span");
+                    localCnt.className = "history-counter local";
+                    localCnt.setAttribute("data-archive-id", Reader.id);
+                    localCnt.title = "Timestamps in this archive";
+                    localCnt.textContent = "0";
+
+                    const sep = document.createElement("span");
+                    sep.textContent = " · ";
+
+                    const globalCnt = document.createElement("span");
+                    globalCnt.className = "history-counter global";
+                    globalCnt.title = "Timestamps in all archives";
+                    globalCnt.textContent = "…"; // will be filled asynchronously
+
+                    // Order: [View] [Record+View] [Add]  [local] · [global]
+                    controls.appendChild(btnView);
+                    controls.appendChild(btnRecordView);
+                    controls.appendChild(btnRecordOnly);
+                    controls.appendChild(document.createTextNode(" "));
+                    controls.appendChild(localCnt);
+                    controls.appendChild(sep);
+                    controls.appendChild(globalCnt);
+
+                    leftOption.appendChild(controls);
+                });
+                // Kick initial counts
+                Reader.refreshLocalHistoryCount(Reader.id);
+                Reader.ensureGlobalHistoryCount();    
+                    // ================================================================
+
                     leftOptionsList.forEach(leftOption => {
                         let bookmark = document.createElement("a");
                         bookmark.className = `${bookmarkState} fa-bookmark fa-2x toggle-bookmark${disabledClass}`;
@@ -685,6 +1043,140 @@ Reader.updateMetadata = function () {
 
     Reader.currentPageLoaded = true;
     $("#i3").removeClass("loading");
+};
+
+// --- History counter state & helpers ---
+Reader._globalHistoryCount = null; // unknown until computed
+
+Reader._setLocalCountText = function (id, count) {
+  document.querySelectorAll('.history-counter.local[data-archive-id="'+id+'"], .history-counter.local')
+    .forEach(el => { el.textContent = String(count); });
+};
+
+Reader._setGlobalCountText = function (count) {
+  document.querySelectorAll('.history-counter.global')
+    .forEach(el => { el.textContent = String(count); });
+};
+
+// Pull fresh count for THIS archive
+Reader.refreshLocalHistoryCount = function (id) {
+  if (!id) return;
+  Server.callAPI(
+    `/api/archives/${encodeURIComponent(id)}/history`,
+    "GET",
+    null,
+    "", // no auto-toast
+    (data) => {
+      const cnt = Array.isArray(data?.history) ? data.history.length : 0;
+      Reader._setLocalCountText(id, cnt);
+    }
+  );
+};
+
+// Compute global count by summing all archives (works with many setups)
+// If your /api/archives payload is different, tweak extractArchiveIds().
+Reader.ensureGlobalHistoryCount = function () {
+  if (Reader._globalHistoryCount !== null) {
+    Reader._setGlobalCountText(Reader._globalHistoryCount);
+    return;
+  }
+  Reader.computeGlobalHistoryCount(); // fire-and-forget; no popups
+};
+
+// Utility: wrap Server.callAPI in a Promise
+Reader._api = (url, method="GET") => new Promise((resolve) => {
+  Server.callAPI(url, method, null, "", (data) => resolve(data));
+});
+
+// Try to extract IDs from various possible payload shapes
+Reader._extractArchiveIds = function (payload) {
+  if (!payload) return [];
+  if (Array.isArray(payload)) {
+    return payload.map(a => a?.id || a?.arcid || a?.archive_id || a).filter(Boolean);
+  }
+  if (Array.isArray(payload.archives)) {
+    return payload.archives.map(a => a?.id || a?.arcid || a?.archive_id || a).filter(Boolean);
+  }
+  if (Array.isArray(payload.data)) {
+    return payload.data.map(a => a?.id || a?.arcid || a?.archive_id || a).filter(Boolean);
+  }
+  return [];
+};
+
+// Fetch one page of archive ids, trying a few common pagination styles
+Reader._fetchArchivePage = async function (offset, size) {
+  const candidates = [
+    `/api/archives?start=${offset}&length=${size}`,
+    `/api/archives?offset=${offset}&limit=${size}`,
+    `/api/archives?skip=${offset}&take=${size}`,
+    `/api/archives` // last resort: unpaginated
+  ];
+  for (const u of candidates) {
+    const payload = await Reader._api(u, "GET");
+    const ids = Reader._extractArchiveIds(payload);
+    if (ids.length > 0 || u === `/api/archives`) {
+      // Done if fewer than requested, or we had to use the unpaginated route
+      const total = payload?.total || payload?.recordsTotal;
+      const done = (u === `/api/archives`) || ids.length < size || (typeof total === "number" && offset + ids.length >= total);
+      return { ids, done };
+    }
+  }
+  return { ids: [], done: true };
+};
+
+// Compute & display global count (sums all /history lengths). Runs chunked.
+Reader.computeGlobalHistoryCount = async function () {
+  try {
+    let total = 0;
+    let offset = 0;
+    const PAGE = 100;
+    while (true) {
+      const { ids, done } = await Reader._fetchArchivePage(offset, PAGE);
+      if (!ids.length) break;
+
+      // Limit concurrency a bit to be gentle on the server
+      const CHUNK = 10;
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const chunk = ids.slice(i, i + CHUNK);
+        const counts = await Promise.all(chunk.map(async (id) => {
+          const res = await Reader._api(`/api/archives/${encodeURIComponent(id)}/history`, "GET");
+          return Array.isArray(res?.history) ? res.history.length : 0;
+        }));
+        total += counts.reduce((a, b) => a + b, 0);
+        Reader._setGlobalCountText(total); // progressive update
+      }
+
+      if (done) break;
+      offset += ids.length;
+    }
+    Reader._globalHistoryCount = total;
+    Reader._setGlobalCountText(total);
+  } catch (e) {
+    // If something goes wrong, just leave "…" and try again later if needed
+  }
+};
+
+// Bump both counters by delta (+1 record, -1 delete, -N clear)
+Reader.bumpHistoryCounters = function (delta, id) {
+  // Local
+  const localEls = document.querySelectorAll('.history-counter.local[data-archive-id="'+id+'"], .history-counter.local');
+  localEls.forEach(el => {
+    const n = parseInt(el.textContent, 10);
+    const next = (isNaN(n) ? 0 : n) + delta;
+    el.textContent = String(Math.max(0, next));
+  });
+
+  // Global
+  const gEls = document.querySelectorAll('.history-counter.global');
+  gEls.forEach(el => {
+    const n = parseInt(el.textContent, 10);
+    const next = (isNaN(n) ? 0 : n) + delta;
+    el.textContent = String(Math.max(0, next));
+  });
+
+  if (typeof Reader._globalHistoryCount === "number") {
+    Reader._globalHistoryCount = Math.max(0, Reader._globalHistoryCount + delta);
+  }
 };
 
 Reader.goToPage = function (page) {
