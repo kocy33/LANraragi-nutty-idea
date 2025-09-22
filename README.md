@@ -2,6 +2,7 @@ Lanraragi Example Nut-Button Test.
 + Clear History doesnt work yet.
 + Backup not working yet
 + Deleting Timestamp / Nut works, but shows error on Toast thingi after.
++ Counters look aweful at wrong location
 
 
 [<img src="https://img.shields.io/docker/pulls/difegue/lanraragi.svg">](https://hub.docker.com/r/difegue/lanraragi/)
