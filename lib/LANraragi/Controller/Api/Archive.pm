@@ -5,6 +5,7 @@ use Digest::SHA qw(sha1_hex);
 use Redis;
 use Encode;
 use Storable;
+
 use Mojo::JSON   qw(decode_json);
 use Scalar::Util qw(looks_like_number);
 
@@ -23,6 +24,82 @@ use LANraragi::Model::Config;
 use LANraragi::Model::Reader;
 
 # Archive API.
+
+sub track_view {
+    my $self = shift;
+    my $id   = $self->stash('id') || 0;
+
+    unless ($id) {
+        return render_api_response($self, "track_view", "No archive ID specified.");
+    }
+
+    my $redis = $self->LRR_CONF->get_redis;
+    my $current_timestamp = time();
+
+    # Increment the view count for the archive using a hash key
+    my $view_count_key = "views:archive:$id";
+    my $new_view_count = $redis->hincrby($view_count_key, 'total', 1);
+
+    # Add the timestamp to a sorted set for history tracking
+    my $history_key = "history:archive:$id";
+    $redis->zadd($history_key, $current_timestamp, $current_timestamp);
+
+    $redis->quit();
+
+    return $self->render(
+        json => {
+            operation => "track_view",
+            success => 1,
+            views => $new_view_count,
+            last_viewed_timestamp => $current_timestamp
+        }
+    );
+}
+
+# Retrieves the full view history for a given archive.
+sub get_history {
+    my $self = shift;
+    my $id   = $self->stash('id') || 0;
+
+    unless ($id) {
+        return render_api_response($self, "get_history", "No archive ID specified.");
+    }
+
+    my $redis = $self->LRR_CONF->get_redis;
+    my $history_key = "history:archive:$id";
+
+    # Retrieve all members from the sorted set, ordered chronologically
+    my @history = $redis->zrange($history_key, 0, -1);
+
+    $redis->quit();
+
+    return $self->render(
+        json => {
+            operation => "get_history",
+            success => 1,
+            history => \@history
+        }
+    );
+}
+
+# Deletes a specific timestamp entry from an archive's view history.
+sub delete_history_entry {
+    my $self = shift;
+    my $id = $self->stash('id') || 0;
+    my $timestamp = $self->stash('timestamp') || 0;
+    unless ($id && $timestamp) {
+        return render_api_response($self, "delete_history_entry", "No archive ID or timestamp specified.");
+    }
+    my $redis = $self->LRR_CONF->get_redis;
+    my $history_key = "history:archive:$id";
+    my $result = $redis->zrem($history_key, $timestamp);
+    $redis->quit();
+    if ($result) {
+        return render_api_response($self, "delete_history_entry", "History entry deleted.", 1);
+    } else {
+        return render_api_response($self, "delete_history_entry", "History entry not found.", 0);
+    }
+}
 
 # Handle missing ID parameter for a whole lot of api methods down below.
 sub check_id_parameter {
