@@ -137,6 +137,12 @@ sub apply_routes {
     $logged_in_api->put('/api/archives/:id/thumbnail')->to('api-archive#update_thumbnail');
     $logged_in_api->put('/api/archives/:id/metadata')->to('api-archive#update_metadata');
     $logged_in_api->delete('/api/archives/:id')->to('api-archive#delete_archive');
+    # Nut Counter API
+    $public_api->put('/api/archives/:id/view')->to('api-archive#track_view');
+    $public_api->get('/api/archives/:id/history')->to('api-archive#get_history');
+    $public_api->delete('/api/archives/:id/history')->to('api-archive#delete_history');
+    $public_api->delete('/api/archives/:id/history/:timestamp')->to('api-archive#delete_history_entry');
+    $public_api->get('/api/archives/:id/views/total')->to('api-archive#get_total_views');
 
     # Search API
     $public_api->get('/search')->to('api-search#handle_datatables');
